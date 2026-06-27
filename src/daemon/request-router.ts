@@ -28,6 +28,7 @@ import {
   withDiagnosticsScope,
 } from '../utils/diagnostics.ts';
 import type { LeaseRegistry } from './lease-registry.ts';
+import type { LeaseLifecycleProvider } from './handlers/lease.ts';
 import { dispatchGenericCommand } from './request-generic-dispatch.ts';
 import { runRequestHandlerChain } from './request-handler-chain.ts';
 import {
@@ -38,7 +39,6 @@ import {
 } from './request-execution-scope.ts';
 import { canRunReplayScopedAction } from './daemon-command-registry.ts';
 import { createAgentBrowserWebProvider } from '../platforms/web/agent-browser-provider.ts';
-import type { LeaseLifecycleProvider } from './handlers/lease.ts';
 
 // ---------------------------------------------------------------------------
 // Request handler API

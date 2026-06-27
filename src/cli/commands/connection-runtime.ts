@@ -10,6 +10,7 @@ import {
   buildRemoteConnectionRequestMetadata,
   hashRemoteConfigFile,
   readRemoteConnectionState,
+  usesLocalDaemonConnectionProfile,
   writeRemoteConnectionState,
   type RemoteConnectionState,
   type RemoteConnectionRequestMetadata,
@@ -604,7 +605,7 @@ function createRemoteConnectionStateFromFlags(
       'remote command requires runId in remote config or via --run-id <id>.',
     );
   }
-  if (!flags.daemonBaseUrl) {
+  if (!flags.daemonBaseUrl && !usesLocalDaemonConnectionProfile(flags, profile)) {
     throw new AppError(
       'INVALID_ARGS',
       'remote command requires daemonBaseUrl in remote config, config, env, or --daemon-base-url.',

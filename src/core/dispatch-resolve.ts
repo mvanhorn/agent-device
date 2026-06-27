@@ -23,6 +23,7 @@ type ResolveDeviceFlags = Pick<
   | 'udid'
   | 'serial'
   | 'leaseId'
+  | 'leaseProvider'
   | 'iosSimulatorDeviceSet'
   | 'androidDeviceAllowlist'
 > & {
@@ -148,6 +149,8 @@ export async function resolveTargetDevice(flags: ResolveDeviceFlags): Promise<De
         deviceName: flags.device,
         udid: flags.udid,
         serial: flags.serial,
+        leaseId: flags.leaseId,
+        leaseProvider: flags.leaseProvider,
       };
       const leaseScope = {
         leaseId: flags.leaseId,

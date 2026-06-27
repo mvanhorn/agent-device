@@ -41,6 +41,7 @@ export type CliFlags = RemoteConfigMetroOptions &
     runId?: string;
     leaseId?: string;
     leaseBackend?: LeaseBackend;
+    leaseProvider?: string;
     force?: boolean;
     noLogin?: boolean;
     kind?: string;
@@ -302,6 +303,13 @@ const FLAG_DEFINITIONS: readonly FlagDefinition[] = [
     enumValues: ['ios-simulator', 'ios-instance', 'android-instance'],
     usageLabel: '--lease-backend ios-simulator|ios-instance|android-instance',
     usageDescription: 'Lease backend for remote tenant connection admission',
+  },
+  {
+    key: 'leaseProvider',
+    names: ['--lease-provider'],
+    type: 'string',
+    usageLabel: '--lease-provider <provider>',
+    usageDescription: 'Cloud lease provider for remote tenant connection admission',
   },
   {
     key: 'force',
@@ -1122,6 +1130,7 @@ export const COMMON_COMMAND_SUPPORTED_FLAG_KEYS = flagKeys(
   'runId',
   'leaseId',
   'leaseBackend',
+  'leaseProvider',
   'sessionLock',
   'sessionLocked',
   'sessionLockConflicts',

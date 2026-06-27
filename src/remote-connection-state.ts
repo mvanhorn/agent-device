@@ -47,6 +47,17 @@ export type RemoteConnectionRequestMetadata = Pick<
   'leaseProvider' | 'deviceKey' | 'clientId'
 >;
 
+export function usesLocalDaemonConnectionProfile(
+  flags: Pick<CliFlags, 'daemonBaseUrl' | 'daemonTransport'>,
+  connection: RemoteConnectionRequestMetadata | undefined,
+): boolean {
+  return Boolean(
+    !flags.daemonBaseUrl &&
+    connection?.leaseProvider &&
+    (flags.daemonTransport ?? 'auto') !== 'http',
+  );
+}
+
 type RemoteConnectionDefaults = {
   flags: Partial<CliFlags>;
   runtime?: SessionRuntimeHints;

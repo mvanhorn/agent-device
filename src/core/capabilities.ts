@@ -85,6 +85,9 @@ function selectCapabilityForPlatform(
 }
 
 export function isCommandSupportedOnDevice(command: string, device: DeviceInfo): boolean {
+  if (device.capabilities?.supportedCommands) {
+    return device.capabilities.supportedCommands.includes(command);
+  }
   const capability = COMMAND_CAPABILITY_MATRIX[command];
   if (!capability) return true;
   const byPlatform = selectCapabilityForPlatform(capability, device.platform);

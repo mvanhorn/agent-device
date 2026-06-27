@@ -25,6 +25,9 @@ export type DeviceInfo = {
   appleOs?: AppleOS;
   booted?: boolean;
   simulatorSetPath?: string;
+  capabilities?: {
+    supportedCommands?: string[];
+  };
 };
 
 type DeviceSelector = {

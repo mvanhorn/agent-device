@@ -7,8 +7,36 @@ import { AppError, asAppError } from '../utils/errors.ts';
 import type { EnvMap } from '../utils/env-map.ts';
 import type { CliFlags } from '../utils/cli-flags.ts';
 import { profileToCliFlags } from '../utils/remote-config.ts';
+import { stripUndefined } from '../utils/parsing.ts';
 
 const GENERATED_REMOTE_CONFIG_SECRET_KEYS = new Set(['daemonAuthToken', 'metroBearerToken']);
+
+export function generatedProfileDefaultsFromFlags(flags: CliFlags): RemoteConfigProfile {
+  return stripUndefined({
+    platform: flags.platform,
+    target: flags.target,
+    device: flags.device,
+    udid: flags.udid,
+    serial: flags.serial,
+    iosSimulatorDeviceSet: flags.iosSimulatorDeviceSet,
+    androidDeviceAllowlist: flags.androidDeviceAllowlist,
+    session: flags.session,
+    metroProjectRoot: flags.metroProjectRoot,
+    metroKind: flags.metroKind,
+    metroPublicBaseUrl: flags.metroPublicBaseUrl,
+    metroProxyBaseUrl: flags.metroProxyBaseUrl,
+    metroBearerToken: flags.metroBearerToken,
+    metroPreparePort: flags.metroPreparePort,
+    metroListenHost: flags.metroListenHost,
+    metroStatusHost: flags.metroStatusHost,
+    metroStartupTimeoutMs: flags.metroStartupTimeoutMs,
+    metroProbeTimeoutMs: flags.metroProbeTimeoutMs,
+    metroRuntimeFile: flags.metroRuntimeFile,
+    metroNoReuseExisting: flags.metroNoReuseExisting,
+    metroNoInstallDeps: flags.metroNoInstallDeps,
+    launchUrl: flags.launchUrl,
+  }) as RemoteConfigProfile;
+}
 
 export function writeGeneratedRemoteConfig(options: {
   stateDir: string;
@@ -77,10 +105,10 @@ export function persistAndResolveGeneratedProfile(options: {
   return {
     flags: {
       ...profileToCliFlags(remoteConfig.profile),
-      ...options.flags,
+      ...stripUndefined(options.flags as Record<string, unknown>),
       ...(options.extraFlags ?? {}),
       remoteConfig: remoteConfig.resolvedPath,
-    },
+    } as CliFlags,
     remoteConfigPath: remoteConfig.resolvedPath,
   };
 }

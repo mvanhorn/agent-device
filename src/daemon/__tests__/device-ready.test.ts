@@ -2,6 +2,10 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import type { DeviceInfo } from '../../utils/device.ts';
+import {
+  setActiveProviderDeviceRuntimes,
+  type ProviderDeviceRuntime,
+} from '../../provider-device-runtime.ts';
 
 vi.mock('../../utils/exec.ts', () => ({
   runCmd: vi.fn(),
@@ -44,6 +48,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearDeviceReadyCacheForTests();
+  setActiveProviderDeviceRuntimes([]);
   vi.useRealTimers();
 });
 
@@ -62,6 +67,32 @@ test('ensureDeviceReady caches successful simulator readiness checks', async () 
     }),
   );
 });
+
+test('ensureDeviceReady skips Limrun-managed devices', async () => {
+  setActiveProviderDeviceRuntimes([makeProviderRuntime('limrun:')]);
+  await ensureDeviceReady({
+    ...IOS_SIMULATOR,
+    id: 'limrun:ios:lease-a',
+  });
+  await ensureDeviceReady({
+    ...ANDROID_EMULATOR,
+    id: 'limrun:android:lease-a',
+  });
+
+  expect(mockEnsureBootedSimulator).not.toHaveBeenCalled();
+  expect(mockWaitForAndroidBoot).not.toHaveBeenCalled();
+});
+
+function makeProviderRuntime(idPrefix: string): ProviderDeviceRuntime {
+  return {
+    provider: 'limrun',
+    leaseLifecycle: {},
+    deviceInventoryProvider: async () => null,
+    ownsDevice: (device) => device.id.startsWith(idPrefix),
+    getInteractor: () => undefined,
+    shutdown: async () => undefined,
+  };
+}
 
 test('ensureDeviceReady focuses cached simulator readiness checks when requested', async () => {
   const device: DeviceInfo = { ...IOS_SIMULATOR, simulatorSetPath: '/tmp/simset-a' };

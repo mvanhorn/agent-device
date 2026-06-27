@@ -11,6 +11,7 @@ import {
   type AgentDeviceClientConfig,
   type AgentDeviceDaemonTransport,
 } from './client.ts';
+import { throwDaemonError } from './daemon-error.ts';
 import { materializeRemoteConnectionForCommand } from './cli/commands/connection-runtime.ts';
 import { tryRunClientBackedCommand } from './cli/commands/router.ts';
 import { runAgentCdpCommand } from './cli/commands/agent-cdp.ts';
@@ -30,6 +31,7 @@ import { resolveCliOptions } from './utils/cli-options.ts';
 import { maybeRunUpgradeNotifier } from './utils/update-check.ts';
 import {
   resolveRemoteConnectionDefaults,
+  usesLocalDaemonConnectionProfile,
   type RemoteConnectionRequestMetadata,
 } from './remote-connection-state.ts';
 import { resolveRemoteAuthForCli } from './cli/auth-session.ts';
@@ -200,17 +202,6 @@ export async function runCli(argv: string[], deps: CliDeps = DEFAULT_CLI_DEPS): 
       }
       let logTailStopper: (() => void) | null = null;
       try {
-        if (command === 'react-devtools') {
-          const exitCode = await runReactDevtoolsCommand(positionals, {
-            flags: effectiveFlags,
-            stateDir: daemonPaths.baseDir,
-            session: effectiveFlags.session ?? sessionName,
-            cwd: process.cwd(),
-            env: process.env,
-          });
-          process.exit(exitCode);
-          return;
-        }
         if (command === 'web') {
           const exitCode = await runWebCommand(positionals, {
             flags: effectiveFlags,
@@ -291,6 +282,30 @@ export async function runCli(argv: string[], deps: CliDeps = DEFAULT_CLI_DEPS): 
           effectiveFlags = materialized.flags;
           resolvedRuntime = materialized.runtime;
           connectionMetadata = materialized.connection;
+        }
+        if (command === 'react-devtools') {
+          const exitCode = await runReactDevtoolsCommand(positionals, {
+            flags: effectiveFlags,
+            stateDir: daemonPaths.baseDir,
+            session: effectiveFlags.session ?? sessionName,
+            cwd: process.cwd(),
+            env: process.env,
+            configureDirectPortReverse: shouldUseDirectReactDevtoolsReverse(
+              effectiveFlags,
+              connectionMetadata,
+            )
+              ? async () => {
+                  await configureDirectReactDevtoolsReverse({
+                    transport: deps.sendToDaemon as AgentDeviceDaemonTransport,
+                    flags: effectiveFlags,
+                    connection: connectionMetadata,
+                    session: effectiveFlags.session ?? sessionName,
+                  });
+                }
+              : undefined,
+          });
+          process.exit(exitCode);
+          return;
         }
         if (
           shouldWarnOpenMayMissRemoteRuntime({
@@ -516,6 +531,42 @@ function shouldWarnOpenMayMissRemoteRuntime(options: {
   if (options.flags.remoteConfig) return false;
   if (options.hadConnectionDefaults) return false;
   return hasExplicitRemoteScopeFlags(options.explicitFlagKeys);
+}
+
+function shouldUseDirectReactDevtoolsReverse(
+  flags: CliFlags,
+  connection: RemoteConnectionRequestMetadata | undefined,
+): boolean {
+  return (
+    flags.leaseBackend === 'android-instance' &&
+    flags.metroProxyBaseUrl === undefined &&
+    usesLocalDaemonConnectionProfile(flags, connection) &&
+    connection?.leaseProvider !== 'proxy' &&
+    flags.leaseId !== undefined
+  );
+}
+
+async function configureDirectReactDevtoolsReverse(options: {
+  transport: AgentDeviceDaemonTransport;
+  flags: CliFlags;
+  connection: RemoteConnectionRequestMetadata | undefined;
+  session: string;
+}): Promise<void> {
+  const response = await options.transport({
+    session: options.session,
+    command: 'runtime',
+    positionals: ['port-reverse'],
+    flags: {
+      ...options.flags,
+      leaseProvider: options.connection?.leaseProvider,
+      clientId: options.connection?.clientId,
+      deviceKey: options.connection?.deviceKey,
+      devicePort: 8097,
+      hostPort: 8097,
+      portReverseName: 'react-devtools',
+    },
+  });
+  if (!response.ok) throwDaemonError(response.error);
 }
 
 function hasExplicitRemoteScopeFlags(explicitFlagKeys: Set<FlagKey>): boolean {

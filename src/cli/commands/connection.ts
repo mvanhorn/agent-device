@@ -8,12 +8,14 @@ import {
   readActiveConnectionState,
   readRemoteConnectionState,
   removeRemoteConnectionState,
+  usesLocalDaemonConnectionProfile,
   writeRemoteConnectionState,
   type RemoteConnectionState,
   type RemoteConnectionRequestMetadata,
 } from '../../remote-connection-state.ts';
 import { AppError } from '../../utils/errors.ts';
 import { resolveCloudConnectProfile } from '../cloud-connection-profile.ts';
+import { resolveLimrunConnectProfile } from '../limrun-connection-profile.ts';
 import { resolveProxyConnectProfile } from '../proxy-connection-profile.ts';
 import {
   hasDeferredMetroConfig,
@@ -35,7 +37,7 @@ export const connectCommand: ClientCommandHandler = async ({ positionals, flags,
   const resolved = await resolveConnectProfile({ provider, flags, stateDir });
   const connectFlags = resolved.flags;
   const connectionMetadata = readRemoteConfigConnectionMetadata(resolved.remoteConfigPath);
-  const scope = readRequiredConnectScope(connectFlags);
+  const scope = readRequiredConnectScope(connectFlags, connectionMetadata);
   const context = resolveConnectContext({
     stateDir,
     flags: connectFlags,
@@ -77,7 +79,7 @@ export const connectCommand: ClientCommandHandler = async ({ positionals, flags,
 };
 
 async function resolveConnectProfile(options: {
-  provider?: 'proxy';
+  provider?: ConnectProvider;
   flags: CliFlags;
   stateDir: string;
 }): Promise<{ flags: CliFlags; remoteConfigPath: string }> {
@@ -85,6 +87,14 @@ async function resolveConnectProfile(options: {
   if (flags.remoteConfig) return resolveRemoteConnectFlags(flags);
   if (provider === 'proxy' || shouldUseProxyConnectShortcut(flags)) {
     return resolveProxyConnectProfile({
+      flags,
+      stateDir,
+      cwd: process.cwd(),
+      env: process.env,
+    });
+  }
+  if (provider === 'limrun') {
+    return resolveLimrunConnectProfile({
       flags,
       stateDir,
       cwd: process.cwd(),
@@ -99,7 +109,9 @@ async function resolveConnectProfile(options: {
   });
 }
 
-function assertConnectProviderUsage(provider: 'proxy' | undefined, flags: CliFlags): void {
+type ConnectProvider = 'proxy' | 'limrun';
+
+function assertConnectProviderUsage(provider: ConnectProvider | undefined, flags: CliFlags): void {
   if (!provider || !flags.remoteConfig) return;
   throw new AppError(
     'INVALID_ARGS',
@@ -107,7 +119,10 @@ function assertConnectProviderUsage(provider: 'proxy' | undefined, flags: CliFla
   );
 }
 
-function readRequiredConnectScope(flags: CliFlags): { tenant: string; runId: string } {
+function readRequiredConnectScope(
+  flags: CliFlags,
+  connectionMetadata?: RemoteConnectionRequestMetadata,
+): { tenant: string; runId: string } {
   if (!flags.tenant) {
     throw new AppError(
       'INVALID_ARGS',
@@ -120,7 +135,7 @@ function readRequiredConnectScope(flags: CliFlags): { tenant: string; runId: str
       'connect requires runId in remote config or via --run-id <id>.',
     );
   }
-  if (!flags.daemonBaseUrl) {
+  if (!flags.daemonBaseUrl && !usesLocalDaemonConnectionProfile(flags, connectionMetadata)) {
     throw new AppError(
       'INVALID_ARGS',
       'connect requires daemonBaseUrl in remote config, config, env, or --daemon-base-url.',
@@ -349,16 +364,17 @@ function createRemoteSessionName(stateDir: string): string {
   return `adc-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`;
 }
 
-function readConnectProvider(positionals: string[]): 'proxy' | undefined {
+function readConnectProvider(positionals: string[]): ConnectProvider | undefined {
   const provider = positionals[0];
   if (provider === undefined) return undefined;
   if (positionals.length > 1) {
     throw new AppError('INVALID_ARGS', 'connect accepts at most one provider positional.');
   }
   if (provider === 'proxy') return provider;
+  if (provider === 'limrun') return provider;
   throw new AppError(
     'INVALID_ARGS',
-    `Unknown connect provider: ${provider}. Supported providers: proxy.`,
+    `Unknown connect provider: ${provider}. Supported providers: proxy, limrun.`,
   );
 }
 
