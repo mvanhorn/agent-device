@@ -15,6 +15,7 @@
 | [0011 Interaction Guarantee Contract](0011-interaction-guarantee-contract.md) | interaction dispatch paths, fast paths, guards, the guarantee matrix, parity tables |
 | [0012 Interactive Replay](0012-interactive-replay.md) | replay healing/`--update`, diagnostic resolution disclosure, bounded `.ad` target-binding evidence, bounded divergence wire/error handling, and plan-bound replay-only `--from` semantics |
 | [0013 Unified Gesture Plans](0013-unified-gesture-plans.md) | gesture API/routing, contact topology, multi-touch geometry, native pointer injection, two-finger pan |
+| [0014 Direct Maestro Compatibility Engine](0014-direct-maestro-engine.md) | Maestro YAML parsing/execution, compatibility observation policy, conformance, performance gates, gesture integration |
 
 ADRs record *why*; the registries and gates they describe are the living source of truth — when
 prose and a registry disagree, the registry wins and the ADR needs a follow-up.
