@@ -435,6 +435,10 @@ test("Fix 3: the source plan's terminal close is skipped (never dispatched, neve
   // it — the agent's own `close --save-script` supplies the real one).
   const session = sessionStore.get(sessionName)!;
   expect(session.actions.map((a) => a.command)).toEqual(['open', 'click']);
+  // C4: skipping the terminal close does NOT delete the session — it stays
+  // alive and COMPLETE so the agent can finalize it with `close --save-script`.
+  expect(sessionStore.get(sessionName)).toBeDefined();
+  expect(session.saveScriptComplete).toBe(true);
 });
 
 test('Fix 3: an ordinary (non-repair) replay still dispatches its terminal close normally', async () => {

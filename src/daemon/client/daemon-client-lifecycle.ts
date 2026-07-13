@@ -315,16 +315,16 @@ export async function cleanupDaemonAfterRequest(
     !isOneShotReplayCommand(req.command) ||
     (!daemon.startedByClient && !settings.ownedStateDir) ||
     isRemoteDaemon(daemon.info) ||
-    // ADR 0012 decision 6 (Fix 1): a repair-armed `--save-script` replay that
-    // comes back as a RESUMABLE divergence must keep its owning daemon (and
-    // the session on it) addressable for the agent's corrective press +
+    // ADR 0012 decision 6, R7 (Fix 1, C1): a repair-armed `--save-script`
+    // replay that comes back as a HELD divergence must keep its owning daemon
+    // (and the session on it) addressable for the agent's corrective press +
     // `replay --from`/`close` — tearing it down here is what turns a
-    // recoverable divergence into a later bare SESSION_NOT_FOUND. The session
-    // itself already pins the daemon against its own idle-reap
-    // (`hasOpenSessions`, daemon-idle-reap.ts) for as long as it stays open;
-    // this only stops the ONE-SHOT-COMMAND teardown below from racing ahead
-    // of that.
-    isResumableRepairDivergence(req, response)
+    // recoverable divergence into a later bare SESSION_NOT_FOUND. The daemon
+    // then bounds the held session's own lifetime via idle-reap (writing a
+    // `REPAIR_SESSION_EXPIRED` tombstone on reap), so an abandoned repair still
+    // cannot leak indefinitely; this only stops the ONE-SHOT-COMMAND teardown
+    // below from racing ahead of that window.
+    isHeldRepairDivergence(req, response)
   ) {
     return;
   }
@@ -364,14 +364,16 @@ export async function cleanupDaemonAfterRequest(
 }
 
 /**
- * ADR 0012 decision 6 (Fix 1): true when this response is exactly the case
- * that must keep the owning daemon alive — a `replay --save-script` request
- * that came back as `REPLAY_DIVERGENCE` with `resume.allowed: true`. Any
- * other shape (success, a non-resumable divergence, an unrelated failure, or
- * a request that never armed `--save-script`) falls through to the ordinary
- * one-shot teardown.
+ * ADR 0012 decision 6, R7 (Fix 1, C1): true when this response must keep the
+ * owning daemon alive — a REPAIR-ARMED (`--save-script`) `REPLAY_DIVERGENCE`
+ * whose payload carries the daemon's `resume.repairSessionHeld` liveness
+ * signal. Keyed on the REPAIR-ARMED condition, NOT on `resume.allowed` (which
+ * every divergence carries and reports only plan-resumability): a repair-armed
+ * divergence with `allowed: false` still holds the session so the agent can
+ * inspect and `close` cleanly rather than hit `SESSION_NOT_FOUND`. A plain,
+ * non-repair divergence carries no signal and gets no keep-alive.
  */
-export function isResumableRepairDivergence(
+export function isHeldRepairDivergence(
   req: Omit<DaemonRequest, 'token'>,
   response: DaemonResponse | undefined,
 ): boolean {
@@ -382,7 +384,7 @@ export function isResumableRepairDivergence(
   if (!divergence || typeof divergence !== 'object') return false;
   const resume = (divergence as Record<string, unknown>).resume;
   if (!resume || typeof resume !== 'object') return false;
-  return (resume as Record<string, unknown>).allowed === true;
+  return (resume as Record<string, unknown>).repairSessionHeld === true;
 }
 
 /**

@@ -286,15 +286,31 @@ export type SessionState = {
    */
   saveScriptDefaultedHealedPath?: boolean;
   /**
-   * ADR 0012 decision 6 (Fix 2): set only by `close --save-script`
-   * (`session-close.ts`) — the agent's explicit finalize of a repair
-   * transaction. A repair-armed session (`saveScriptBoundary` set) is a live,
-   * uncommitted transaction: `SessionScriptWriter.write` refuses to publish
-   * the healed `.ad` while this stays false, so a divergence-only exit,
-   * daemon teardown, or idle-reap can never emit a partial healed script.
-   * Meaningless (never checked) for an ordinary, non-repair recording.
+   * ADR 0012 decision 6, R7 + commit semantics (C2): the repair TRANSACTION
+   * completion flag. `true` iff the last repair-armed replay run reached its
+   * final EXECUTABLE step with no outstanding divergence (the terminal source
+   * `close` is excluded — C4). Commit is gated on this, NOT merely on a
+   * `close`: `SessionScriptWriter.write` publishes a repair-armed session's
+   * healed `.ad` only when complete, so a `close`/`close --save-script`
+   * issued after a divergence but before the plan finishes discards a prefix
+   * instead of committing it. States: ARMED (`saveScriptBoundary` set,
+   * complete unset) -> COMPLETE (this true) -> COMMITTED (`saveScriptCommitted`).
    */
-  saveScriptFinalized?: boolean;
+  saveScriptComplete?: boolean;
+  /**
+   * ADR 0012 decision 6 (C2): set by the writer after a repair-armed session's
+   * healed `.ad` is atomically published. Makes re-publish idempotent (a second
+   * `writeSessionLog` no-ops) and lets teardown distinguish a COMMITTED session
+   * (nothing to tombstone) from an aborted/reaped one.
+   */
+  saveScriptCommitted?: boolean;
+  /**
+   * ADR 0012 decision 6, R7 (C5a): the original replay input path of an armed
+   * repair, stashed so an idle-reap tombstone can hand the agent an actionable
+   * `replay <path> --save-script` re-run command instead of a bare
+   * SESSION_NOT_FOUND.
+   */
+  repairSourcePath?: string;
   actions: SessionAction[];
   recording?:
     | (SessionRecordingBase & {

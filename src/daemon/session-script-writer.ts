@@ -22,15 +22,34 @@ import type { SessionAction, SessionState } from './types.ts';
 export type SessionScriptWriteResult = { written: false } | { written: true; path: string };
 
 /**
- * ADR 0012 decision 6 (Fix 4): trailer comment marking a healed `.ad` as a
+ * ADR 0012 decision 6 (Fix 4, C2): trailer comment marking a healed `.ad` as a
  * COMPLETE, review-worthy repair artifact. An ordinary `#` comment to every
  * reader (old and new) — it binds to nothing (`parseTargetAnnotationCommentLine`
  * only recognizes the `target-v1` prefix), so it never participates in the
  * target-annotation binding rule. Written only when a repair-armed session's
- * write reaches this point at all, since `write()` already gated that on
- * `saveScriptFinalized` — so every write carrying it IS complete.
+ * write reaches this point at all, since `write()` already gated that on the
+ * transaction being COMPLETE (`saveScriptComplete`) — so every write carrying
+ * it IS a complete, committed transaction.
  */
 export const HEAL_COMPLETE_SENTINEL = '# agent-device:heal-complete';
+
+/**
+ * ADR 0012 decision 6, R7 + commit semantics (C2): a repair-armed session is a
+ * live transaction, COMMITTED only on completion — `true` means "do not publish
+ * now":
+ * - Already committed -> idempotent no-op (never a duplicate/second write).
+ * - Not COMPLETE (the plan never ran to its last executable step) -> ABORT:
+ *   publish NOTHING. This is what stops a `close`/`close --save-script` issued
+ *   after a divergence but before the plan finishes from committing a PREFIX;
+ *   every non-completion teardown (divergence-only exit, daemon shutdown,
+ *   idle-reap) lands here too.
+ * Ordinary (non-repair) recording is never blocked (no `saveScriptBoundary`).
+ */
+function isRepairArmedWriteBlocked(session: SessionState): boolean {
+  if (session.saveScriptBoundary === undefined) return false;
+  if (session.saveScriptCommitted) return true;
+  return !session.saveScriptComplete;
+}
 
 export class SessionScriptWriter {
   private readonly sessionsDir: string;
@@ -44,20 +63,21 @@ export class SessionScriptWriter {
     try {
       if (!session.recordSession) return { written: false };
       const repairArmed = session.saveScriptBoundary !== undefined;
-      // ADR 0012 decision 6 (Fix 2): a repair-armed session is a live
-      // transaction — it publishes only when the agent explicitly finalized
-      // it (`close --save-script`, session-close.ts). Every other teardown
-      // path (divergence-only exit, daemon shutdown, idle-reap) reaches here
-      // with `saveScriptFinalized` still false and must discard, never emit a
-      // partial healed script. Ordinary (non-repair) recording is unaffected:
-      // `repairArmed` is false, so this never gates it.
-      if (repairArmed && !session.saveScriptFinalized) return { written: false };
+      if (isRepairArmedWriteBlocked(session)) return { written: false };
       scriptPath = this.resolveScriptPath(session);
-      assertNoCompleteHealedClobber(session, scriptPath);
       const scriptDir = path.dirname(scriptPath);
       if (!fs.existsSync(scriptDir)) fs.mkdirSync(scriptDir, { recursive: true });
       const script = formatSessionScript(session, repairArmed);
-      writeScriptAtomically(scriptPath, script);
+      publishHealedScriptAtomically({
+        scriptPath,
+        script,
+        // The completeness-aware no-clobber guard protects ONLY the DEFAULT
+        // healed sibling (an explicit `--save-script=<out>` may overwrite as
+        // the caller directed).
+        protectComplete: Boolean(session.saveScriptDefaultedHealedPath),
+      });
+      // COMMITTED: idempotent guard above + teardown's abort/tombstone routing.
+      if (repairArmed) session.saveScriptCommitted = true;
       return { written: true, path: scriptPath };
     } catch (error) {
       // ADR 0012 decision 6, R4: an AppError here means the script would be
@@ -94,13 +114,27 @@ function formatSessionScript(session: SessionState, appendCompleteSentinel: bool
 }
 
 /**
- * ADR 0012 decision 6 (Fix 4): writes `script` to `scriptPath` atomically —
- * to a transaction-scoped temp path beside the destination, then renamed into
- * place. A reader (or a concurrent `assertNoCompleteHealedClobber` check)
- * therefore only ever observes the prior complete file or the new one, never
- * a truncated partial write.
+ * ADR 0012 decision 6, commit semantics + no-clobber (Fix 4, C5b): publishes
+ * `script` to `scriptPath` atomically AND race-safely.
+ *
+ * - Atomic: the temp file is created in the SAME DIRECTORY as the target
+ *   (never `/tmp`), so the final publish is an intra-directory rename/link on
+ *   one filesystem — a reader never observes a half-written script, and an
+ *   explicit `--save-script=<path>` on a different mount still publishes
+ *   atomically. An aborted write leaves only the (removed) temp, no partial
+ *   at the target.
+ * - Race-safe no-clobber: the absent-target case publishes via `linkSync`,
+ *   which fails atomically with `EEXIST` if a file appeared meanwhile — there
+ *   is no check-then-write TOCTOU window against a COMPLETE artifact. Only
+ *   after confirming the existing file is incomplete/unprotected do we
+ *   overwrite it via rename.
  */
-function writeScriptAtomically(scriptPath: string, script: string): void {
+function publishHealedScriptAtomically(params: {
+  scriptPath: string;
+  script: string;
+  protectComplete: boolean;
+}): void {
+  const { scriptPath, script, protectComplete } = params;
   const dir = path.dirname(scriptPath);
   const tempPath = path.join(
     dir,
@@ -108,10 +142,27 @@ function writeScriptAtomically(scriptPath: string, script: string): void {
   );
   fs.writeFileSync(tempPath, script);
   try {
+    try {
+      // Atomic create-if-absent: EEXIST iff the target already exists.
+      fs.linkSync(tempPath, scriptPath);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    // The target exists. A COMPLETE (sentinel-marked) default healed artifact
+    // is review-worthy and must never be silently clobbered; an incomplete or
+    // partial one is always overwritable by a fresh repair that completes.
+    if (protectComplete && isCompleteHealedScript(scriptPath)) {
+      throw new AppError(
+        'COMMAND_FAILED',
+        `A prior healed script already exists at ${scriptPath}; pass replay --save-script=<path> to write elsewhere, or remove/rename it first, so an unreviewed healed script is never clobbered.`,
+      );
+    }
     fs.renameSync(tempPath, scriptPath);
-  } catch (error) {
+  } finally {
+    // linkSync leaves the temp hard-link behind on success; rename consumes it;
+    // an error leaves it — always clean up whatever remains.
     fs.rmSync(tempPath, { force: true });
-    throw error;
   }
 }
 
@@ -161,30 +212,12 @@ function assertNoUnresolvedRefFallback(action: SessionAction): void {
 }
 
 /**
- * ADR 0012 decision 6 (P2, refined by Fix 4): the default `<original-stem>.healed.ad`
- * sibling path is deterministic, so a second repair against the same
- * original would silently clobber an unreviewed prior healed script —
- * undercutting the ADR's "a human reviews the diff and promotes it." Refuse
- * loudly (fail-loud per R4's philosophy) unless the caller passes an
- * explicit `--save-script=<path>` (which clears the defaulted flag). Only
- * guards the DEFAULT healed path; an explicit `<out>` may overwrite as the
- * caller directed.
- *
- * Fix 4: the guard is completeness-aware — it protects only a COMPLETE,
- * review-worthy prior artifact (carrying `HEAL_COMPLETE_SENTINEL`). A file at
- * that path WITHOUT the sentinel is a partial left over from before Fix 2
- * (or any other incomplete write) and is safe to overwrite silently; there is
- * nothing reviewable in it yet.
+ * ADR 0012 decision 6, no-clobber (Fix 4, C5b): a file is a COMPLETE,
+ * review-worthy healed artifact iff it carries the completeness sentinel
+ * (written only on a successful atomic commit). A file without it is a partial
+ * — from an aborted/reaped repair — and is freely overwritable by a fresh
+ * repair that completes.
  */
-function assertNoCompleteHealedClobber(session: SessionState, scriptPath: string): void {
-  if (!session.saveScriptDefaultedHealedPath) return;
-  if (!isCompleteHealedScript(scriptPath)) return;
-  throw new AppError(
-    'COMMAND_FAILED',
-    `A prior healed script already exists at ${scriptPath}; pass replay --save-script=<path> to write elsewhere, or remove/rename it first, so an unreviewed healed script is never clobbered.`,
-  );
-}
-
 function isCompleteHealedScript(scriptPath: string): boolean {
   let contents: string;
   try {

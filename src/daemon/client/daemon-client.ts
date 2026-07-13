@@ -10,7 +10,7 @@ import {
   attachRepairSessionAddressHint,
   cleanupDaemonAfterRequest,
   ensureDaemon,
-  isResumableRepairDivergence,
+  isHeldRepairDivergence,
   resolveClientSettings,
   type DaemonClientSettings,
 } from './daemon-client-lifecycle.ts';
@@ -111,7 +111,7 @@ function withRepairSessionAddressHintIfOwned(
   response: DaemonResponse,
   settings: DaemonClientSettings,
 ): DaemonResponse {
-  if (response.ok || !settings.ownedStateDir || !isResumableRepairDivergence(req, response)) {
+  if (response.ok || !settings.ownedStateDir || !isHeldRepairDivergence(req, response)) {
     return response;
   }
   return attachRepairSessionAddressHint(response, settings.paths.baseDir);

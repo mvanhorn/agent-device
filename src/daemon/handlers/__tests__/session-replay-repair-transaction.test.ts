@@ -12,7 +12,7 @@
  * Fix 1 (session-side): a divergence never deletes the session — it stays in
  * the SessionStore, addressable for the next call.
  * Fix 2: SessionScriptWriter.write only publishes once `close --save-script`
- * sets `saveScriptFinalized` — never on a divergence-only exit or an
+ * sets `saveScriptComplete` — never on a divergence-only exit or an
  * abandoned close.
  * Fix 3: the source plan's terminal `close` is skipped while repair-armed, so
  * the resume completes instead of diverging on lifecycle.
@@ -142,10 +142,12 @@ test('end-to-end repair transaction: cold divergence stays alive, corrective res
   expect(leg1.error.code).toBe('REPLAY_DIVERGENCE');
   const divergence = leg1.error.details?.divergence as {
     kind: string;
-    resume: { allowed: boolean; from: number; planDigest: string };
+    resume: { allowed: boolean; from: number; planDigest: string; repairSessionHeld?: boolean };
   };
   expect(divergence.kind).toBe('selector-miss');
   expect(divergence.resume.allowed).toBe(true);
+  // C1: the daemon marks the repair-transaction liveness signal on the wire.
+  expect(divergence.resume.repairSessionHeld).toBe(true);
 
   // Fix 1 (session-side): the session stays alive — never torn down on a
   // divergence-only exit. (The client-side daemon PROCESS keep-alive that
@@ -153,6 +155,9 @@ test('end-to-end repair transaction: cold divergence stays alive, corrective res
   // in daemon-client-lifecycle.test.ts.)
   expect(sessionStore.get(sessionName)).toBeDefined();
   expect(sessionStore.get(sessionName)!.actions.map((a) => a.command)).toEqual(['open']);
+  // C2: the transaction is NOT complete yet — a `close` here would abort, not
+  // commit a prefix.
+  expect(sessionStore.get(sessionName)!.saveScriptComplete).toBeFalsy();
 
   // --- Agent performs the corrective press (blessed @ref), recorded live. ---
   const session = sessionStore.get(sessionName)!;
@@ -181,10 +186,12 @@ test('end-to-end repair transaction: cold divergence stays alive, corrective res
   expect(session.actions.map((a) => a.command)).toEqual(['open', 'press', 'click']);
   // The terminal close never dispatched or recorded.
   expect(session.actions.some((a) => a.command === 'close')).toBe(false);
-  expect(session.saveScriptFinalized).toBeFalsy();
+  // C2: the resume reached the last executable step (terminal close skipped) —
+  // the transaction is now COMPLETE and commit-eligible.
+  expect(session.saveScriptComplete).toBe(true);
 
   // --- The agent finalizes: `close --save-script` (the real handler, not a
-  // direct writer call) commits the healed `.ad`. ---
+  // direct writer call) commits the now-COMPLETE healed `.ad`. ---
   const closeResponse = await handleCloseCommand({
     req: {
       token: 't',
@@ -270,4 +277,83 @@ test('end-to-end repair transaction: cold divergence stays alive, corrective res
       ? fs.readdirSync(path.dirname(abandonedHealedPath))
       : [],
   ).toEqual(['flow.ad']);
+});
+
+test('C5a: an incomplete repair reaped by idle-reap leaves a tombstone (no healed file); a fresh replay --save-script clears it', async () => {
+  const { root, sessionStore, sessionName, logPath } = setup(
+    'agent-device-repair-transaction-reap-',
+  );
+  const filePath = writeReplayFile(root, [
+    'open "Demo" --relaunch',
+    SAVE_ANNOTATION,
+    'click id="save"',
+    'close',
+  ]);
+  const invoke = makeRecordingReplayInvoke({ sessionStore, sessionName });
+
+  const leg1 = await runReplayScriptFile({
+    req: baseReq({ positionals: [filePath], flags: { saveScript: true } }),
+    sessionName,
+    logPath,
+    sessionStore,
+    invoke,
+  });
+  expect(leg1.ok).toBe(false);
+  const session = sessionStore.get(sessionName)!;
+  expect(session.saveScriptComplete).toBeFalsy();
+  expect(session.repairSourcePath).toBe(filePath);
+
+  // Idle-reap tears the still-incomplete repair session down: the writer commits
+  // nothing (not complete) and a tombstone is left behind (the exact teardown
+  // step daemon-runtime.ts's teardownDaemonSession runs).
+  sessionStore.finalizeRepairTeardown(session);
+  sessionStore.delete(sessionName);
+  expect(fs.existsSync(path.join(root, 'flow.healed.ad'))).toBe(false);
+
+  const tombstone = sessionStore.readRepairTombstone(sessionName);
+  expect(tombstone).toBeDefined();
+  expect(tombstone?.sourcePath).toBe(filePath);
+
+  // A fresh `replay --save-script` on the same key clears the tombstone.
+  await runReplayScriptFile({
+    req: baseReq({ positionals: [filePath], flags: { saveScript: true } }),
+    sessionName,
+    logPath,
+    sessionStore,
+    invoke: makeRecordingReplayInvoke({ sessionStore, sessionName }),
+  });
+  expect(sessionStore.readRepairTombstone(sessionName)).toBeUndefined();
+});
+
+test('C5a: teardown of a COMPLETE repair auto-commits the healed file and writes NO tombstone', async () => {
+  const { root, sessionStore, sessionName, logPath } = setup(
+    'agent-device-repair-transaction-autocommit-',
+  );
+  // A clean (non-diverging) repair-armed replay completes the plan.
+  const filePath = writeReplayFile(root, ['open "Demo" --relaunch', 'click id="save-v2"']);
+  const invoke = makeRecordingReplayInvoke({
+    sessionStore,
+    sessionName,
+    evidence: (req) => (req.command === 'click' ? freshEvidence('save-v2', 'Save V2') : undefined),
+  });
+
+  const response = await runReplayScriptFile({
+    req: baseReq({ positionals: [filePath], flags: { saveScript: true } }),
+    sessionName,
+    logPath,
+    sessionStore,
+    invoke,
+  });
+  expect(response.ok).toBe(true);
+  const session = sessionStore.get(sessionName)!;
+  expect(session.saveScriptComplete).toBe(true);
+
+  // Teardown (e.g. the client tearing down the ephemeral daemon after a clean
+  // repair) auto-commits the completed transaction and leaves no tombstone.
+  sessionStore.finalizeRepairTeardown(session);
+  expect(fs.existsSync(path.join(root, 'flow.healed.ad'))).toBe(true);
+  expect(fs.readFileSync(path.join(root, 'flow.healed.ad'), 'utf8')).toContain(
+    HEAL_COMPLETE_SENTINEL,
+  );
+  expect(sessionStore.readRepairTombstone(sessionName)).toBeUndefined();
 });

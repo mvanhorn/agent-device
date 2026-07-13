@@ -121,13 +121,14 @@ export async function handleCloseCommand(params: {
     });
     if (req.flags?.saveScript) {
       session.recordSession = true;
-      // ADR 0012 decision 6 (Fix 2): the agent's explicit finalize signal — the
-      // only event that lets SessionScriptWriter.write publish a repair-armed
-      // session's healed `.ad`. A close reached WITHOUT --save-script on a
-      // still repair-armed session (an abandoned/aborted repair) leaves this
-      // false, so the writer discards rather than emitting a partial script.
-      session.saveScriptFinalized = true;
     }
+    // ADR 0012 decision 6, R7 + commit semantics (C2): committing is gated on
+    // TRANSACTION COMPLETION, not on `close`. For a repair-armed session the
+    // writer publishes the healed `.ad` only when `saveScriptComplete` is set
+    // (the plan ran to its last executable step) and discards otherwise — so a
+    // `close`/`close --save-script` reached after a divergence but before the
+    // plan finishes ABORTS the transaction (publishes no prefix) rather than
+    // committing one. An already-committed session is an idempotent no-op.
     sessionStore.writeSessionLog(session);
     await cleanupRetainedMaterializedPathsForSession(sessionName).catch(() => {});
   } finally {

@@ -206,6 +206,16 @@ export async function runReplayScriptFile(params: {
       sessionName,
     });
     if (repairRunPreflight) return repairRunPreflight;
+    if (req.flags?.saveScript) {
+      // ADR 0012 decision 6, R7 (C5a): a fresh `replay --save-script` on this
+      // key clears any prior reap tombstone before starting a new transaction.
+      sessionStore.clearRepairTombstone(sessionName);
+    }
+    // ADR 0012 decision 6 (C2): a repair-armed resume re-opens the completion
+    // window — a leg that re-diverges must not inherit a prior leg's COMPLETE
+    // flag and let a later `close` commit a now-stale transaction.
+    const preRunSession = sessionStore.get(sessionName);
+    if (preRunSession?.saveScriptBoundary !== undefined) preRunSession.saveScriptComplete = false;
     const armReplaySaveScriptStep = createReplaySaveScriptArmer({
       saveScript: req.flags?.saveScript,
       sessionStore,
@@ -270,12 +280,26 @@ export async function runReplayScriptFile(params: {
       );
       collectReplayActionArtifactPaths(response).forEach((entry) => artifactPaths.add(entry));
       if (!response.ok) {
+        // ADR 0012 decision 6, R7 (C1): a divergence from a repair-armed run
+        // keeps its session live — mark the wire signal so the client keeps the
+        // owning daemon alive and the agent knows the session is addressable.
+        const held = (r: DaemonResponse): DaemonResponse =>
+          markRepairSessionHeldIfArmed({ response: r, req, sessionStore, sessionName });
         // A complete target-binding divergence must pass through unchanged —
         // failStep would rebuild it as a generic action-failure divergence
         // (double-capture + lost kind/targetBinding).
-        if (isCompleteTargetBindingDivergenceResponse(response)) return response;
-        return await failStep(response, action, index);
+        if (isCompleteTargetBindingDivergenceResponse(response)) return held(response);
+        return held(await failStep(response, action, index));
       }
+    }
+
+    // ADR 0012 decision 6 (C2): the loop reached the last executable step with
+    // no outstanding divergence (the terminal source `close` was skipped, C4) —
+    // the repair transaction is now COMPLETE and commit-eligible.
+    const completedSession = sessionStore.get(sessionName);
+    if (completedSession?.saveScriptBoundary !== undefined) {
+      completedSession.saveScriptComplete = true;
+      sessionStore.set(sessionName, completedSession);
     }
 
     const replayedCount = actions.length - entryIndex.value;
@@ -512,7 +536,43 @@ function armReplaySaveScriptStep(params: {
   if (session.saveScriptBoundary === undefined) {
     session.saveScriptBoundary = firstArm ? session.actions.length : 0;
   }
+  // ADR 0012 decision 6, R7 (C5a): stash the original replay input so a reap
+  // tombstone can hand back an actionable `replay <path> --save-script` re-run.
+  if (session.repairSourcePath === undefined) session.repairSourcePath = sourcePath;
   sessionStore.set(sessionName, session);
+}
+
+/**
+ * ADR 0012 decision 6, R7 (C1): stamps the `resume.repairSessionHeld` liveness
+ * signal on a repair-armed divergence — the honest wire marker that the owning
+ * session was kept live (this daemon never tears it down on a divergence) and
+ * remains addressable for the corrective press + `replay --from`/`close`. Set
+ * only when the session is genuinely held (armed): a plain non-repair
+ * divergence, or one before step-1 `open` created/armed the session, gets no
+ * signal (and no keep-alive). Never `false` — absent when not held.
+ */
+function markRepairSessionHeldIfArmed(params: {
+  response: DaemonResponse;
+  req: DaemonRequest;
+  sessionStore: SessionStore;
+  sessionName: string;
+}): DaemonResponse {
+  const { response, req, sessionStore, sessionName } = params;
+  if (response.ok || !req.flags?.saveScript) return response;
+  if (sessionStore.get(sessionName)?.saveScriptBoundary === undefined) return response;
+  const resume = readDivergenceResumeRecord(response);
+  if (resume) resume.repairSessionHeld = true;
+  return response;
+}
+
+/** The mutable `details.divergence.resume` record on a failed response, or `undefined`. */
+function readDivergenceResumeRecord(
+  response: Extract<DaemonResponse, { ok: false }>,
+): Record<string, unknown> | undefined {
+  const divergence = response.error.details?.divergence;
+  if (!divergence || typeof divergence !== 'object') return undefined;
+  const resume = (divergence as Record<string, unknown>).resume;
+  return resume && typeof resume === 'object' ? (resume as Record<string, unknown>) : undefined;
 }
 
 /** `flows/login.ad` -> `flows/login.healed.ad`, beside the original (R6). */
