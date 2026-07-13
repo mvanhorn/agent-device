@@ -324,7 +324,7 @@ export async function cleanupDaemonAfterRequest(
     // `REPAIR_SESSION_EXPIRED` tombstone on reap), so an abandoned repair still
     // cannot leak indefinitely; this only stops the ONE-SHOT-COMMAND teardown
     // below from racing ahead of that window.
-    isHeldRepairDivergence(req, response)
+    isHeldRepairDivergence(response)
   ) {
     return;
   }
@@ -365,19 +365,19 @@ export async function cleanupDaemonAfterRequest(
 
 /**
  * ADR 0012 decision 6, R7 (Fix 1, C1): true when this response must keep the
- * owning daemon alive — a REPAIR-ARMED (`--save-script`) `REPLAY_DIVERGENCE`
- * whose payload carries the daemon's `resume.repairSessionHeld` liveness
- * signal. Keyed on the REPAIR-ARMED condition, NOT on `resume.allowed` (which
- * every divergence carries and reports only plan-resumability): a repair-armed
- * divergence with `allowed: false` still holds the session so the agent can
- * inspect and `close` cleanly rather than hit `SESSION_NOT_FOUND`. A plain,
- * non-repair divergence carries no signal and gets no keep-alive.
+ * owning daemon alive — a `REPLAY_DIVERGENCE` whose payload carries the
+ * daemon's `resume.repairSessionHeld` liveness signal. The daemon sets that
+ * signal from the PERSISTED repair-transaction state (the session is
+ * repair-armed and not yet committed), NOT from the current request's
+ * `--save-script` flag — so a `replay --from` continuation that does not
+ * repeat `--save-script` (R2) is still kept alive if it diverges. Keying the
+ * client purely off the signal (the daemon is the authority on transaction
+ * state) is what makes that continuation work; a plain, non-repair divergence
+ * carries no signal and gets no keep-alive. Also independent of
+ * `resume.allowed` (plan-resumability): a held divergence with `allowed: false`
+ * still holds the session so the agent can inspect and `close` cleanly.
  */
-export function isHeldRepairDivergence(
-  req: Omit<DaemonRequest, 'token'>,
-  response: DaemonResponse | undefined,
-): boolean {
-  if (!req.flags?.saveScript) return false;
+export function isHeldRepairDivergence(response: DaemonResponse | undefined): boolean {
   if (!response || response.ok) return false;
   if (response.error.code !== 'REPLAY_DIVERGENCE') return false;
   const divergence = response.error.details?.divergence;

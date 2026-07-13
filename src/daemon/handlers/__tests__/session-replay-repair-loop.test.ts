@@ -551,3 +551,62 @@ test('Fix 3: a --from resume that lands on the terminal close skips it too, lett
   // recorded live; the terminal close was skipped, never dispatched.
   expect(session.actions.map((a) => a.command)).toEqual(['open', 'press']);
 });
+
+// --- ADR 0012 decision 6, R7 (continuation persisted-state): a `replay --from`
+// continuation does NOT repeat --save-script; if it diverges, the session is
+// still held alive keyed off the PERSISTED armed state, not the request flag. ---
+
+test('a --from continuation WITHOUT --save-script that diverges is still held alive (repairSessionHeld set from persisted state)', async () => {
+  const { root, sessionStore, sessionName, logPath } = setup(
+    'agent-device-replay-repair-continuation-',
+  );
+  // No annotations => action-failure path; both clicks fail so leg1 diverges at
+  // step 2 and the --from-3 continuation diverges at step 3.
+  const filePath = writeReplayFile(root, ['open "Demo"', 'click id="a"', 'click id="b"']);
+  const invoke = makeRecordingReplayInvoke({
+    sessionStore,
+    sessionName,
+    failSteps: new Set(['click id="a"', 'click id="b"']),
+  });
+
+  // Leg 1: `replay --save-script` opens the transaction, arms the session, and
+  // diverges at step 2 — held alive.
+  const leg1 = await runReplayScriptFile({
+    req: baseReq({ positionals: [filePath], flags: { saveScript: true } }),
+    sessionName,
+    logPath,
+    sessionStore,
+    invoke,
+  });
+  expect(leg1.ok).toBe(false);
+  if (leg1.ok) return;
+  const leg1Divergence = leg1.error.details?.divergence as {
+    resume: { planDigest: string; repairSessionHeld?: boolean };
+  };
+  expect(leg1Divergence.resume.repairSessionHeld).toBe(true);
+  const armed = sessionStore.get(sessionName)!;
+  expect(armed.saveScriptBoundary).not.toBeUndefined();
+
+  // Leg 2: the `--from 3` continuation carries NO --save-script. It re-diverges
+  // at step 3 — and must STILL be held alive, keyed off the persisted armed
+  // state, so the transaction survives.
+  const leg2 = await runReplayScriptFile({
+    req: baseReq({
+      positionals: [filePath],
+      flags: { replayFrom: 3, replayPlanDigest: leg1Divergence.resume.planDigest },
+    }),
+    sessionName,
+    logPath,
+    sessionStore,
+    invoke,
+  });
+  expect(leg2.ok).toBe(false);
+  if (leg2.ok) return;
+  expect(leg2.error.code).toBe('REPLAY_DIVERGENCE');
+  const leg2Divergence = leg2.error.details?.divergence as {
+    resume: { repairSessionHeld?: boolean };
+  };
+  // The key assertion: held alive despite no --save-script on this request.
+  expect(leg2Divergence.resume.repairSessionHeld).toBe(true);
+  expect(sessionStore.get(sessionName)).toBeDefined();
+});

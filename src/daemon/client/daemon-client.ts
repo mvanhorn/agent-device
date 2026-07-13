@@ -93,7 +93,7 @@ export async function sendToDaemon(
         ),
       { requestId, command: req.command },
     );
-    response = withRepairSessionAddressHintIfOwned(req, response, settings);
+    response = withRepairSessionAddressHintIfOwned(response, settings);
     return response;
   } finally {
     await cleanupDaemonAfterRequest(req, daemon, settings, response);
@@ -107,11 +107,10 @@ export async function sendToDaemon(
  * (`settings.ownedStateDir` means `daemon.startedByClient` is also true).
  */
 function withRepairSessionAddressHintIfOwned(
-  req: Omit<DaemonRequest, 'token'>,
   response: DaemonResponse,
   settings: DaemonClientSettings,
 ): DaemonResponse {
-  if (response.ok || !settings.ownedStateDir || !isHeldRepairDivergence(req, response)) {
+  if (response.ok || !settings.ownedStateDir || !isHeldRepairDivergence(response)) {
     return response;
   }
   return attachRepairSessionAddressHint(response, settings.paths.baseDir);

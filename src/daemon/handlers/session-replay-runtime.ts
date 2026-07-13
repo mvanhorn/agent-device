@@ -284,7 +284,7 @@ export async function runReplayScriptFile(params: {
         // keeps its session live — mark the wire signal so the client keeps the
         // owning daemon alive and the agent knows the session is addressable.
         const held = (r: DaemonResponse): DaemonResponse =>
-          markRepairSessionHeldIfArmed({ response: r, req, sessionStore, sessionName });
+          markRepairSessionHeldIfArmed({ response: r, sessionStore, sessionName });
         // A complete target-binding divergence must pass through unchanged —
         // failStep would rebuild it as a generic action-failure divergence
         // (double-capture + lost kind/targetBinding).
@@ -553,13 +553,17 @@ function armReplaySaveScriptStep(params: {
  */
 function markRepairSessionHeldIfArmed(params: {
   response: DaemonResponse;
-  req: DaemonRequest;
   sessionStore: SessionStore;
   sessionName: string;
 }): DaemonResponse {
-  const { response, req, sessionStore, sessionName } = params;
-  if (response.ok || !req.flags?.saveScript) return response;
-  if (sessionStore.get(sessionName)?.saveScriptBoundary === undefined) return response;
+  const { response, sessionStore, sessionName } = params;
+  if (response.ok) return response;
+  // The transaction is active iff the session is repair-armed and not yet
+  // committed — the PERSISTED state, NOT this request's `--save-script` flag.
+  // A `replay --from` continuation (which does not repeat `--save-script`, per
+  // R2) is therefore still held on divergence and stays in the transaction.
+  const session = sessionStore.get(sessionName);
+  if (session?.saveScriptBoundary === undefined || session.saveScriptCommitted) return response;
   const resume = readDivergenceResumeRecord(response);
   if (resume) resume.repairSessionHeld = true;
   return response;

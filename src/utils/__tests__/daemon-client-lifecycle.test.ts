@@ -967,12 +967,16 @@ test('sendToDaemon tears down an owned ephemeral daemon on an UNHELD divergence 
   }
 });
 
-test('sendToDaemon tears down an owned ephemeral daemon on a held divergence WITHOUT --save-script', async (t) => {
+test('continuation: sendToDaemon keeps the daemon alive on a held divergence even WITHOUT --save-script on the request', async (t) => {
   if (!(await supportsLoopbackBind())) {
     t.skip('loopback listeners are not permitted in this environment');
     return;
   }
 
+  // The `replay --from` continuation of a repair does NOT repeat --save-script
+  // (R2); the daemon still sets `repairSessionHeld` from the PERSISTED armed
+  // state, so the client — keying purely off that signal — must keep the daemon
+  // alive if the continuation itself diverges, keeping the transaction going.
   const daemon = await startHttpDaemonErrorFixture(heldDivergenceError());
   let ownedStateDir = '';
   installSpawnedHttpDaemonAtOwnedStateDir(daemon.port, (dir) => {
@@ -984,17 +988,14 @@ test('sendToDaemon tears down an owned ephemeral daemon on a held divergence WIT
       session: 'default',
       command: 'replay',
       positionals: ['drifted.ad'],
-      // No --save-script: an ordinary deterministic replay never arms a repair,
-      // so the client gate requires the flag even if a stray signal appears.
-      flags: { daemonTransport: 'http' },
-      meta: { requestId: 'req-no-save-script' },
+      flags: { replayFrom: 3, replayPlanDigest: 'digest-abc', daemonTransport: 'http' },
+      meta: { requestId: 'req-continuation-no-save-script' },
     });
 
     assert.equal(response.ok, false);
     if (response.ok) return;
-    assert.equal(response.error.hint, undefined);
     assert.ok(ownedStateDir.length > 0);
-    assert.equal(fs.existsSync(ownedStateDir), false);
+    assert.equal(fs.existsSync(ownedStateDir), true);
   } finally {
     await closeLoopbackServer(daemon.server);
     if (ownedStateDir) fs.rmSync(ownedStateDir, { recursive: true, force: true });
