@@ -285,6 +285,16 @@ export type SessionState = {
    * prior `.healed.ad` diff.
    */
   saveScriptDefaultedHealedPath?: boolean;
+  /**
+   * ADR 0012 decision 6 (Fix 2): set only by `close --save-script`
+   * (`session-close.ts`) — the agent's explicit finalize of a repair
+   * transaction. A repair-armed session (`saveScriptBoundary` set) is a live,
+   * uncommitted transaction: `SessionScriptWriter.write` refuses to publish
+   * the healed `.ad` while this stays false, so a divergence-only exit,
+   * daemon teardown, or idle-reap can never emit a partial healed script.
+   * Meaningless (never checked) for an ordinary, non-repair recording.
+   */
+  saveScriptFinalized?: boolean;
   actions: SessionAction[];
   recording?:
     | (SessionRecordingBase & {

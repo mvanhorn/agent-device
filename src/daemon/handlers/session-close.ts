@@ -121,6 +121,12 @@ export async function handleCloseCommand(params: {
     });
     if (req.flags?.saveScript) {
       session.recordSession = true;
+      // ADR 0012 decision 6 (Fix 2): the agent's explicit finalize signal — the
+      // only event that lets SessionScriptWriter.write publish a repair-armed
+      // session's healed `.ad`. A close reached WITHOUT --save-script on a
+      // still repair-armed session (an abandoned/aborted repair) leaves this
+      // false, so the writer discards rather than emitting a partial script.
+      session.saveScriptFinalized = true;
     }
     sessionStore.writeSessionLog(session);
     await cleanupRetainedMaterializedPathsForSession(sessionName).catch(() => {});

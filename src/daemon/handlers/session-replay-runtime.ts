@@ -248,6 +248,17 @@ export async function runReplayScriptFile(params: {
     for (let index = entryIndex.value; index < actions.length; index += 1) {
       const action = actions[index];
       if (!action || action.command === 'replay') continue;
+      if (
+        isRepairArmedTerminalClose({
+          action,
+          index,
+          totalActions: actions.length,
+          sessionStore,
+          sessionName,
+        })
+      ) {
+        continue;
+      }
       armReplaySaveScriptStep();
       emitReplayTestActionProgress(resolved, index, actions.length, action);
       const sampleStart = readSessionSnapshotSampleCount(sessionStore, sessionName);
@@ -418,6 +429,32 @@ function preflightReplayAgainstActiveRepair(params: {
     'INVALID_ARGS',
     'This session has an active --save-script repair run; continue it with replay --from <n> --plan-digest <sha256>, or finish with close, before starting a fresh full replay.',
   );
+}
+
+/**
+ * ADR 0012 decision 6 (Fix 3): the source plan's own terminal `close` is
+ * lifecycle, not a script step to replay, while a repair is armed — the agent
+ * finalizes the transaction with `close --save-script` instead
+ * (`session-close.ts`). Replaying the recorded `close` here would dispatch it
+ * as an ordinary step: it tears the session down (and, absent Fix 1/2, could
+ * even publish or diverge) before the agent gets that chance. Skipped exactly
+ * like the `replay` pseudo-command just above it in the loop — never
+ * dispatched, never divergence-checked, and (like that skip) not counted out
+ * of `replayedCount`. Checked against session state, not this invocation's
+ * own flags, matching R2: a repair stays armed across separate `--from` legs
+ * regardless of whether `--save-script` is repeated on each one.
+ */
+function isRepairArmedTerminalClose(params: {
+  action: SessionAction;
+  index: number;
+  totalActions: number;
+  sessionStore: SessionStore;
+  sessionName: string;
+}): boolean {
+  const { action, index, totalActions, sessionStore, sessionName } = params;
+  if (action.command !== 'close') return false;
+  if (index !== totalActions - 1) return false;
+  return sessionStore.get(sessionName)?.saveScriptBoundary !== undefined;
 }
 
 /**
