@@ -9,7 +9,6 @@ import type { SessionState } from '../types.ts';
 import {
   createDaemonIdleReap,
   hasActiveRecording,
-  hasOpenSessions,
   hasReapBlockingOpenSessions,
   isDaemonIdle,
   resolveDaemonIdleReapMs,
@@ -58,10 +57,10 @@ test('resolveDaemonIdleReapMs ignores invalid overrides', () => {
   assert.equal(resolveDaemonIdleReapMs({ AGENT_DEVICE_DAEMON_IDLE_TIMEOUT_MS: '-5' }), 5 * 60_000);
 });
 
-test('hasOpenSessions reflects the session store', () => {
-  assert.equal(hasOpenSessions(sessionStore), false);
+test('hasReapBlockingOpenSessions reflects the session store', () => {
+  assert.equal(hasReapBlockingOpenSessions(sessionStore), false);
   sessionStore.set('default', makeSession());
-  assert.equal(hasOpenSessions(sessionStore), true);
+  assert.equal(hasReapBlockingOpenSessions(sessionStore), true);
 });
 
 test('hasActiveRecording is true only when a stored session carries a recording', () => {
