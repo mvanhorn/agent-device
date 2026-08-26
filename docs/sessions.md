@@ -16,15 +16,17 @@ When a session is established, human output includes a `Session state: <path>` l
 Session artifact directories contain per-run evidence for concurrent agents:
 
 - `requests/<request-id>.ndjson` - daemon request diagnostics for this session.
-- `events.ndjson` - session event timeline for requests and recorded actions.
+- `events.ndjson` - session event timeline for requests and recorded actions; rotates to `events.ndjson.1` past 5 MB (`AGENT_DEVICE_EVENT_LOG_MAX_BYTES`, whole bytes), with `events.ndjson.window.json` recording each retained generation's first absolute line index, line count, and first-line digest so `events` cursors stay absolute and are verified against the files on disk.
 - `runner.log` - Apple runner and `xcodebuild` build/start output for this session.
 - `app.log` - app/device logs when `logs start` or `logs clear --restart` is active.
 
-`events.ndjson` is privacy-shaped for automation timelines: it preserves command names, status,
-durations, paths, session/device/app identifiers, refs/selectors, and coordinates, while replacing
-typed text, clipboard writes, push/event payloads, raw unknown command arguments, and matching raw
-message fragments with length-only placeholders. `--no-record` suppresses recorded action entries;
-request start/finish entries still record command, status, and timing.
+`events.ndjson` is privacy-shaped for automation timelines. It preserves command names, status,
+durations, bounded device/app inventory previews, lifecycle outcomes, artifact basenames, and
+structural action details such as scroll distance/direction, safe refs, and coordinates.
+User-entered text, clipboard contents, push/event payloads, selector values, free-form
+flags/messages/paths, and raw unknown command arguments are omitted or replaced with content-free
+placeholders. `--no-record` suppresses recorded action entries; request start/finish entries still
+record command, status, and timing.
 
 The top-level daemon log is for daemon lifecycle/startup issues. Use the session artifact directory first when debugging a specific run.
 

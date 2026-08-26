@@ -43,38 +43,57 @@ agent-device replay ~/.agent-device/sessions/e2e-2026-02-09T12-00-00-000Z.ad --s
 ```
 
 - Replay reads `.ad` scripts.
+- A script without a terminal `close` already leaves its session active. For an existing script that
+  does end in `close`, pass `--keep-session` to suppress only that final action and continue with
+  interactive commands in the same session:
+
+  ```bash
+  agent-device replay ./checkout.ad --session e2e-run --keep-session
+  agent-device snapshot -i --session e2e-run
+  ```
+
+  Interior `close` actions still run. The flag is intentionally unavailable to `test` because suite
+  attempts own cleanup, and it is rejected for Maestro YAML because that runtime owns its lifecycle.
 
 ## Run Maestro compatibility flows
 
-Agent Device can run a supported subset of Maestro YAML through the replay runtime:
+Agent Device can run a supported subset of Maestro YAML through its typed Maestro compatibility runtime:
 
 ```bash
 agent-device replay ./flow.yaml --maestro --platform ios --session e2e-run
 agent-device test ./maestro-flows --maestro --platform android --artifacts-dir ./tmp/maestro-artifacts
 ```
 
-Maestro compatibility translates supported YAML commands into Agent Device replay actions. It is intended for common mobile flows, not full Maestro parity. Unsupported Maestro syntax fails loudly with the command or field name and a line number when available. If a missing command matters for your flows, use the compatibility tracker to check current support and share demand:
+Supported subset:
 
-- Supported and unsupported capabilities: [https://github.com/callstack/agent-device/issues/558](https://github.com/callstack/agent-device/issues/558)
-- New focused compatibility request: [https://github.com/callstack/agent-device/issues/new](https://github.com/callstack/agent-device/issues/new)
+- Flows: `launchApp`; `runFlow` file/inline with platform, visibility, and limited boolean conditions; `onFlowStart`/`onFlowComplete`; `repeat.times` and retry.
+- Interactions: `tapOn`, `doubleTapOn`, `longPressOn`, `inputText` on the focused element, `eraseText`, `openLink`, `hideKeyboard`, basic `pressKey`, and `back`; selector targets poll until available and support recursive `index`, `childOf`, `above`, `below`, `leftOf`, `rightOf`, `containsChild`, `containsDescendants`, points, and `optional`; outer command labels are metadata, not target selectors.
+- Assertions and navigation: `assertVisible`, `assertNotVisible`, `assertTrue` (literal values and `${VAR}` lookups only; `""`, `"false"`, `"0"`, `"null"`, and `"undefined"` are falsy, everything else is truthy), `extendedWaitUntil`, `scroll`, `scrollUntilVisible`, absolute/percentage/target `swipe`, `takeScreenshot`, `waitForAnimationToEnd`, and `stopApp`.
+- Scripts: ordered `runScript` file/env scripts with `http.post`, `json`, and `output` variables.
 
-Currently supported areas include app launch with Apple-platform launch arguments and Android/iOS simulator `clearState`, `runFlow` file/inline with `when.platform`, `when.visible`, `when.notVisible`, and limited `when.true` boolean/platform expressions, `onFlowStart` and `onFlowComplete` hooks, deterministic `repeat.times`, `tapOn` including `optional`, `index`, `childOf`, `label`, and absolute/percentage point taps, `doubleTapOn` and `longPressOn`, `inputText`, focused-field `eraseText`, and `pasteText`, `openLink`, visibility assertions and `extendedWaitUntil`, `scroll` and `scrollUntilVisible`, absolute/percentage `swipe` and `swipe.label`, screenshots, keyboard dismiss, basic `pressKey`, `back`, animation waits, and `stopApp`, and ordered trusted `runScript` file/env scripts with `http.post`, `json`, and `output` variables. `runScript` is supported only as an ordered Maestro compatibility step for trusted file/env scripts; it can make network requests, and is not a native `.ad` command or security sandbox. Script execution uses Node `vm` only for compatibility isolation, not for security; the script timeout bounds synchronous execution, while `http.post` requests are bounded by the helper process timeout. Output keys cannot contain `.` because exported variables are addressed as `output.<key>`.
+Boundaries:
 
-Maestro `env` values use the same replay precedence as `.ad` files: flow `env` is the default, shell `AD_VAR_*` values override it, and CLI `-e KEY=VALUE` wins over both.
+- Runtime: iOS and Android only; `launchApp.clearState` supports Android and iOS simulators, launch arguments are Apple-only, and standalone device utility/state commands are unsupported.
+- Expressions: `when.true` supports boolean literals and `maestro.platform` comparisons; `assertTrue` supports literal values and `${VAR}` lookups only; `repeat.while`, `evalScript`, and broader JavaScript expressions are unsupported.
+- Environment: flow `env` is the default, `AD_VAR_*` overrides it, and CLI `-e KEY=VALUE` wins over both.
+- Failure diagnostics: resolved targets and `runFlow` paths are rendered, while `inputText` payloads remain hidden; do not place secrets in diagnostic identifiers.
+- Trust: `runScript` executes trusted scripts, may make `http.post` network requests, and is not a security sandbox; output keys cannot contain a dot.
+- Errors and tracking: unsupported commands and fields fail with source context when available; open a focused issue only when implementation work is planned.
+- Session takeover: `--keep-session` is a native `.ad` replay option and is rejected for Maestro YAML.
 
-Unsupported Maestro features such as `repeat.while`, full expression predicates beyond boolean literals and `maestro.platform` comparisons, `evalScript`, device utility commands, Android app launch arguments, and Android app state reset are tracked separately because they require neutral Agent Device runtime or device capabilities before they can be mapped safely.
+See [ADR 0015](https://github.com/callstack/agent-device/blob/main/docs/adr/0015-direct-maestro-engine.md) for architecture, performance tradeoffs, and deliberate deviations. If a missing feature matters for your suite, [open a focused issue](https://github.com/callstack/agent-device/issues/new) with a small flow snippet.
 
 ## Export `.ad` scripts to Maestro YAML
 
 Replay scripts can be exported to a Maestro YAML subset when you need to hand a recorded Agent Device flow to a Maestro runner:
 
 ```bash
-agent-device replay export ./workflows/checkout.ad --format maestro --out ./maestro/checkout.yaml
+agent-device replay export ./workflows/checkout.ad --out ./maestro/checkout.yaml
 ```
 
 `replay export` is a local file transform. It does not start the daemon or contact a device. If `--out` is omitted, the YAML is printed to stdout.
 
-The exporter is intentionally strict. It writes Maestro YAML for compatible flow actions such as app launch, taps, long press, text input, keyboard dismiss/enter, back, text visibility assertions, coordinate swipes, basic scroll, screenshots, and `.ad` `env` directives. Agent-only inspection or maintenance actions such as `snapshot`, `get`, `record`, `trace`, `settings`, and unsupported selector shapes fail with the source line and action instead of being silently dropped. Known semantic differences are reported as warnings; for example, `.ad` `fill` exports as `tapOn` plus `inputText`, which may append text in Maestro rather than replacing existing field contents.
+The exporter is intentionally strict. It writes Maestro YAML for compatible flow actions such as app launch, taps, long press, text input, keyboard dismiss/enter, back, text visibility assertions, coordinate swipes, basic scroll, screenshots, and `.ad` `env` directives. Agent-only inspection or maintenance actions such as `snapshot`, `get`, `record`, `trace`, `settings`, and unsupported selector shapes fail with the source line and action instead of being silently dropped. Known semantic differences are reported as warnings; for example, `.ad` `fill` exports as `tapOn` plus `inputText`, which may append text in Maestro rather than replacing existing field contents. Native `.ad` `label=` selectors export as Maestro `text:` selectors and warn because Maestro text matching is broader than label-only matching.
 
 ## Run a lightweight `.ad` suite
 
@@ -150,13 +169,10 @@ For a live terminal reporter that prints each completed test as an emoji, title,
 export default {
   name: 'emoji-status',
   onTestResult(test, context) {
-    const icon =
-      test.status === 'pass' ? '✓' : test.status === 'fail' ? '⨯' : '-';
+    const icon = test.status === 'pass' ? '✓' : test.status === 'fail' ? '⨯' : '-';
     const title = test.title?.trim() || test.file;
     const duration =
-      typeof test.durationMs === 'number'
-        ? ` ${(test.durationMs / 1000).toFixed(2)}s`
-        : '';
+      typeof test.durationMs === 'number' ? ` ${(test.durationMs / 1000).toFixed(2)}s` : '';
 
     context.stderr.write(`${icon} ${title}${duration}\n`);
   },
@@ -298,11 +314,17 @@ A failing `replay`/`test` step returns a structured `REPLAY_DIVERGENCE` error in
   "details": {
     "divergence": {
       "step": { "index": 4, "source": { "path": "flow.ad", "line": 6 } },
-      "screen": { "state": "available", "refsGeneration": 3, "refs": [ /* ... */ ] },
+      "screen": {
+        "state": "available",
+        "refsGeneration": 3,
+        "refs": [
+          /* ... */
+        ],
+      },
       "suggestions": [{ "selector": "id=\"auth_continue\"", "basis": "id" }],
-      "resume": { "allowed": true, "from": 4, "planDigest": "…64 hex chars…" }
-    }
-  }
+      "resume": { "allowed": true, "from": 4, "planDigest": "…64 hex chars…" },
+    },
+  },
 }
 ```
 
@@ -330,10 +352,10 @@ agent-device replay ./flow.ad
 agent-device replay ./flow.ad --from 4 --plan-digest ab12...
 ```
 
-`resume.allowed` is `false`, with a `reason`, when resuming cannot be proven safe:
-
-- a skipped step can produce `outputEnv` values (a Maestro `runScript` step) a later step might consume;
-- the skipped range or the resume target itself is runtime control flow (a Maestro `retry:` or `runFlow.when:` block) — these execute dynamically and are never individually addressable by `--from`.
+For Maestro flows, `--from` addresses the immutable top-level typed plan. Compact runtime control nodes
+remain single plan steps and nested commands are not independently addressable. As with generic `.ad`
+replay, the caller is responsible for restoring any state and environment values established by skipped
+steps before resuming.
 
 Passing `--plan-digest` that no longer matches the current script — because you edited it, an include changed, or platform-conditioned expansion differs — fails `INVALID_ARGS` before any action; run a fresh full replay to get a new digest. `--from` is `replay`-only; `test` rejects it (a suite run must stay full and deterministic).
 
@@ -350,4 +372,4 @@ Passing `--plan-digest` that no longer matches the current script — because yo
 - Replay file parse error:
   - Validate quoting in `.ad` lines (unclosed quotes are rejected).
 - Maestro compatibility flow fails on unsupported syntax:
-  - Check the linked command or field in [https://github.com/callstack/agent-device/issues/558](https://github.com/callstack/agent-device/issues/558). If it is important to your suite, comment there or open a focused issue with a small flow snippet.
+  - Check [ADR 0015](https://github.com/callstack/agent-device/blob/main/docs/adr/0015-direct-maestro-engine.md). If the missing feature matters to your suite, open a focused issue with a small flow snippet.
